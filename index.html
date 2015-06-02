@@ -1,0 +1,718 @@
+<!doctype html>
+<html lang="en">
+
+	<head>
+		<meta charset="utf-8">
+
+    <title>Scaling Rails</title>
+
+		<meta name="description" content="A framework for easily creating beautiful presentations using HTML">
+		<meta name="author" content="Hakim El Hattab">
+
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, minimal-ui">
+
+		<link rel="stylesheet" href="css/reveal.css">
+		<link rel="stylesheet" href="css/theme/black.css" id="theme">
+
+		<!-- Code syntax highlighting -->
+		<link rel="stylesheet" href="lib/css/zenburn.css">
+
+		<!-- Printing and PDF exports -->
+		<script>
+			var link = document.createElement( 'link' );
+			link.rel = 'stylesheet';
+			link.type = 'text/css';
+			link.href = window.location.search.match( /print-pdf/gi ) ? 'css/print/pdf.css' : 'css/print/paper.css';
+			document.getElementsByTagName( 'head' )[0].appendChild( link );
+		</script>
+
+		<!--[if lt IE 9]>
+		<script src="lib/js/html5shiv.js"></script>
+		<![endif]-->
+	</head>
+
+	<body>
+
+		<div class="reveal">
+
+			<!-- Any section element inside of this container is displayed as a slide -->
+			<div class="slides">
+				<section>
+					<h1>Scaling Rails Up</h1>
+					<h3>Bucharest.rb 2015</h3>
+					<p>
+            <small>Created by <a href="https://github.com/teodor-pripoae">Teodor Pripoae</a></small>
+					</p>
+				</section>
+
+				<section>
+					<h2>Contents</h2>
+          <ol>
+            <li>Scaling Rails vertically</li>
+            <li>Scaling Rails horizontally</li>
+            <li>Optimizations</li>
+            <li>Scaling Servers or Databases</li>
+            <li>Monitoring</li>
+            <li>Scaling team productivity</li>
+          </ol>
+				</section>
+
+        <!-- Scaling vertically -->
+				<section>
+					<section>
+						<h1>Scaling vertically</h1>
+					</section>
+        </section>
+
+        <section>
+					<section>
+						<h2>Optimizing SQL</h2>
+					</section>
+					<section>
+						<h2>Avoid N+1 queries</h2>
+					  <pre>
+              <code data-trim>
+clients = Client.limit(10)
+clients.each do |client|
+  puts client.address.postcode
+end
+
+# => 11 SQL queries
+					    </code>
+
+              <code data-trim>
+clients = Client.includes(:address).limit(10)
+clients.each do |client|
+  puts client.address.postcode
+end
+# => 2 SQL queries
+					    </code>
+            </pre>
+					</section>
+
+          <section>
+            <h3>Use bullet</h3>
+
+            <img src="https://s3.amazonaws.com/infinum.web.production/repository_items/files/000/000/414/original/bullet3.png?1412035313"/>
+          </section>
+
+          <section>
+            <h3>Use rack mini profiler</h3>
+            <img src="https://s3.amazonaws.com/infinum.web.production/repository_items/files/000/000/408/original/rmp_2.png?1412034854"/>
+          </section>
+				</section>
+
+        <!-- Background jobs -->
+        <section>
+          <section>
+            <h1>Move stuff into background jobs</h1>
+          </section>
+
+          <section>
+            <h3>Old code</h3>
+
+            <pre>
+              <code data-trim>
+class UsersController < ApplicationController
+  def create
+    user = User.new(user_params)
+
+    if user.save
+      UserMailer.send_verify_email(user).deliver
+    else
+      render :new
+    end
+  end
+end
+              </code>
+            </pre>
+          </section>
+
+          <section>
+            <h3>Gemfile</h3>
+            <pre>
+              <code data-trim>
+gem 'sidekiq', '~> 3.3.4'
+
+# If running Rails 4.1 or below
+gem 'activejob', '~> 4.2.1'
+              </code>
+            </pre>
+          </section>
+
+          <section>
+            <pre>
+              <code data-trim>
+class SendVerifyEmailJob < ActiveJob::Base
+  def perform(user_id)
+    user = User.find(user_id)
+    UserMailer.send_verify_email(user).deliver
+  end
+end
+              </code>
+            </pre>
+            <pre>
+              <code data-trim>
+class UsersController < ApplicationController
+  def create
+    user = User.new(user_params)
+    if user.save
+      SendVerifyEmailJob.perform_later(user.id)
+    else
+      render :new
+    end
+  end
+end
+              </code>
+            </pre>
+				</section>
+      </section>
+      <!-- /Background jobs -->
+
+      <!-- Cache everything -->
+      <section>
+        <section>
+          <h1> Cache everything</h1>
+        </section>
+				<section>
+					<h3>Old code</h3>
+					<pre>
+            <code data-trim>
+class UsersController < ApplicationController
+  def show
+    @user = User.find(params[:id])
+  end
+end
+            </code>
+					</pre>
+				</section>
+
+        <section>
+          <h3> Cached </h3>
+
+          <pre>
+            <code data-trim>
+class User < ActiveRecord::Base
+  after_commit :flush_cache
+  after_touch :flush_cache
+
+  def self.cached_find(id)
+    Rails.cache.fetch(["model.user.id", id]) { find_by(id: id) }
+  end
+
+  def flush_cache
+    Rails.cache.delete(["model.user.id", id])
+  end
+end
+            </code>
+          </pre>
+          <pre>
+            <code>
+class UsersController < ApplicationController
+  def show
+    @user = User.cached_find(params[:id])
+  end
+end
+            </code>
+          </pre>
+        </section>
+      </section>
+      <!-- /Cache everything -->
+
+      <!-- Use puma -->
+      <section>
+        <h3>Webserver choice</h3>
+
+        <p>
+          <img src="https://camo.githubusercontent.com/0e2d5a8d3edf69cf833293f05defe5175bc3a0e4/68747470733a2f2f7261772e6769746875622e636f6d2f6a726f63686b696e642f66616b655f776f726b5f6170702f6d61737465722f62756e6368615f73696567655f6c6f67732f6865726f6b755f73696567655f35305f3235302d4a756e652d32352d313532342e706e67"/>
+        </p>
+
+        <p>
+          On our setup puma increased request throughput by about 4-5 times after moving from unicorn (3 workers) to puma (2 workers, 16 threads per worker)
+        </p>
+      </section>
+      <!-- /Use puma -->
+
+      <!-- Use grape API -->
+      <section>
+        <section>
+          <h1>Use Grape API</h1>
+
+          <img src="http://i.imgur.com/6oaROS2.png"/>
+        </section>
+
+        <section>
+          <pre>
+          <code data-trim style="max-height: 650px; font-size: 0.7em; line-height: 1.3em">
+class API::SessionAPI < Grape::API
+  resource :sign_up do
+    ## POST /sign_up
+    desc "User sign up"
+    params do
+      requires :email, type: String, desc: "Email"
+      requires :password, type: String, desc: "Password"
+      requires :password_confirmation, type: String, desc: "Password confirmation"
+      optional :invitation_token, type: String, desc: "Invitation token"
+    end
+
+    post do
+      user = User.new(declared(params, include_missing: false))
+
+      if user.save
+        Users::SendVerifyEmailJob.perform_later(user.id)
+        {messages: ["You are one step away from joining. Please check your email!"]}
+      else
+        error_422!(user)
+      end
+    end
+  end
+end
+          </code>
+          </pre>
+        </section>
+
+        <section>
+          <h3> Entities</h3>
+          <pre>
+            <!--<code data-trim style="font-size: 0.7em; line-height: 1.2em">-->
+            <code data-trim class="ruby">
+...
+desc "List of recent interactions"
+get "/recent_interactions" do
+  present current_profile.recent_profiles, with: ProfileEntity,
+                                           version: :thumb
+end
+...
+            </code>
+          </pre>
+
+          <pre>
+            <code data-trim>
+class ProfileEntity < Grape::Entity
+  expose :id
+  expose :first_name
+  expose :last_name
+  expose :image do |p, options|
+    p.image.url(options[:version] || :big_thumb)
+  end
+  expose :address, with: API::Entities::AddressEntity
+end
+            </code>
+          </pre>
+        </section>
+      </section>
+      <!-- /Use grape API -->
+
+      <!-- / Scaling vertically -->
+
+      <!-- Scaling horizontally -->
+      <section>
+        <h1>Scaling Rails horizontally</h1>
+      </section>
+
+      <section>
+        <h2>Use centralized session storage</h2>
+
+        <pre>
+          <code data-trim class="ruby">
+require 'redis_session_store'
+
+Kuende::Application.config.session_store :redis_session_store, {
+  key: "_kuende_session",
+  redis: {
+    db: CONFIG[:session_db],
+    expire_after: CONFIG[:session_expire_time] || 2.weeks,
+    key_prefix: CONFIG[:session_namespace],
+    host: CONFIG[:redis_host],
+    port: CONFIG[:redis_port]
+  },
+  serializer: :json
+}
+          </code>
+        </pre>
+      </section>
+
+      <!-- Immutable infrastructure -->
+      <section>
+        <section>
+          <h2>Use immutable infrastructure</h2>
+        </section>
+
+        <section>
+          <h3> Benefits of running immutable infrastructure</h3>
+
+          <ul>
+            <li class="fragment">No problem if losing a server or two, you can create others in seconds</li>
+            <li class="fragment">Easy to provision new servers (automate everything)</li>
+            <li class="fragment">You always know which state your servers are</li>
+            <li class="fragment">Separate data from code</li>
+            <li class="fragment">Easy to start in development mode, running the same scripts</li>
+            <li class="fragment">Avoid problems due to different development/production ruby/pg/etc versions</li>
+            <li class="fragment">Easy rollback to a known state</li>
+          </ul>
+        </section>
+
+        <section>
+          <h3> Best practices</h3>
+          <ul>
+            <li>Don't use filesystem for uploads, use AWS S3</li>
+            <li class="fragment">
+              <p>Keep config files on git, use ENV vars</p>
+              <pre style="margin: 0 auto; height: 273px">
+                <code style="max-height: 230px">
+# database.yml
+production: &production
+  adapter: postgresql
+  database: <%= ENV['DATABASE_NAME'] %>
+  username: <%= ENV['DATABASE_USER'] %>
+  password: <%= ENV['DATABASE_PASSWORD'] %>
+  host: <%= ENV['DATABASE_HOST'] %>
+  pool: <%= ENV['DATABASE_POOL'] %>
+                </code>
+              </pre>
+            </li>
+
+            <li class="fragment">Use a configuration manager and/or docker</li>
+            <li class="fragment">Do not hardcode IPs</li>
+          </ul>
+        </section>
+
+        <section>
+          <h2>Our use case</h2>
+        </section>
+
+        <section>
+          <h3>We use chef for</h3>
+          <p style="text-align: left">
+            <ul>
+              <li class="fragment">Installing base ubuntu packages (vim, htop, wget, etc)</li>
+              <li class="fragment">Creating and configuring user accounts</li>
+              <li class="fragment">Installing and configuring docker</li>
+              <li class="fragment">Managing security permissions/firewall, etc</li>
+              <li class="fragment">Installing and configuring databases (postgres, redis, etc)</li>
+            </ul>
+          </p>
+        </section>
+
+        <section>
+          <h3>We use docker for services</h3>
+          <p style="text-align: left">
+            <ul>
+              <li class="fragment">Running applications (all our applications are running inside docker)</li>
+              <li class="fragment">Continuous integration (github.com/drone/drone)</li>
+              <li class="fragment">Development, Azk is your friend (github.com/azukiapp/azk)</li>
+            </ul>
+          </p>
+        </section>
+
+        <section>
+          <h3>Use DNS service discovery or etcd</h3>
+
+          <p style="text-align: left">
+            <ul>
+              <li class="fragment">Don't connect to database on 1.2.3.4:5432, use db.myapp.production</li>
+              <li class="fragment">Run skydns (github.com/skynetservices/skydns) dns server</li>
+              <li class="fragment">Run dnsmasq on every machine to cache dns requests (UDP packets can be dropped over heavy load)</li>
+            </ul>
+
+            <pre class="fragment">
+              <code data-trim style="font-size: 0.79em; line-height: 1.2em">
+# Setting a key
+curl -XPUT http://127.0.0.1:4001/v2/keys/skydns/production/myapp/mq/\
+           -d value='{"host":"mq.myapp.production"}'
+
+# Deleting a key
+curl -XDELETE http://127.0.0.1:4001/v2/keys/skydns/production/myapp/mq
+              </code>
+            </pre>
+          </p>
+        </section>
+      </section>
+      <!-- Immutable infrastructure -->
+      <!-- /Scaling horizontally -->
+
+      <!-- Optimizations -->
+      <section>
+        <section>
+          <h1>Optimizations</h1>
+        </section>
+        <section>
+          <h3>Carrierwave is slow</h3>
+          <pre>
+          <code data-trim>
+class ImageUploader < CarrierWave::Uploader::Base
+  version :thumb do
+    ....
+  end
+  ....
+  version :preview do
+    ...
+  end
+end
+            </code>
+          </pre>
+
+          <pre>
+            <code>
+post '/images/' do
+  ...
+  image.file = params[:file]
+  image.save
+  ...
+end
+            </code>
+          </pre>
+        </section>
+
+        <section>
+          <h3>Resize in background</h3>
+
+          <pre>
+            <code data-trim class="ruby">
+post '/images/' do
+  ...
+  single_image = SingleImage.create(:file => params[:file])
+  image.set_image_promise(:file, single_image.file.url)
+  image.save
+
+  ResizeImageJob.perform_later(image, single_image)
+  ...
+end
+            </code>
+          </pre>
+        </section>
+
+        <section>
+          <h3>Resizing image in background</h3>
+
+          <pre>
+            <code data-trim>
+class ResizeImageJob < ActiveJob::Base
+  def perform(image, image_url)
+    image.file.remote_file_url = image_url
+    image.delete_image_promise(:file)
+    image.save
+  end
+end
+            </code>
+          </pre>
+        </section>
+
+        <section>
+          <h3>What if image thumb is requested before being resized ?</h3>
+
+          <pre>
+            <code data-trim style="max-height: 500px; font-size: 0.79em; line-height: 1.2em">
+
+# Instead of:
+image.file.url(:thumb)
+
+# Do:
+image.image_promise_url(:file, :thumb)
+
+def image_or_promise(kind, version = nil)
+  # Is there a promise set on record, meaning it was not yet resized ?
+  promise = image_promise(kind)
+
+  if promise.present?
+    # Send link to image proxy which resizes on the fly
+    image_promise_url(kind, version)
+  else
+    # carrierwave model.uploader.url(version)
+    send(kind).url(version)
+  end
+end
+            </code>
+          </pre>
+        </section>
+      </section>
+
+      <section>
+        <h3>Redis lists</h3>
+        <pre>
+          <code class="ruby" data-trim style="max-height: 650px; font-size: 0.79em; line-height: 1.2em">
+VISITED_PROFILES_SIZE = 5
+
+def visited_profiles
+  find_ordered(visited_profiles_ids)
+end
+
+def visited_profiles_ids
+  redis.lrange(visited_profiles_key, 0, -1).map(&:to_i)
+end
+
+def visit_profile(profile)
+  key = visited_profiles_key
+
+  redis.multi do |multi|
+    # remove all occurences of profile.id from list
+    multi.lrem(key, 0, profile.id.to_s)
+    # add profile.id to left side of the list
+    multi.lpush(key, profile.id.to_s)
+    # make sure list has only 5 elements
+    multi.ltrim(key, 0, VISITED_PROFILES_SIZE - 1)
+  end
+end
+
+def visited_profiles_key
+  "visited_profiles:#{self.id}"
+end
+          </code>
+        </pre>
+      </section>
+
+      <section>
+        <h3>Use connection pooling</h3>
+
+        <pre>
+          <code data-trim class="ruby" style="max-height: 650px; font-size: 0.79em; line-height: 1.2em">
+# Instead of:
+$redis.get("my.key")
+
+# Do:
+# config/initializers/redis.rb
+$redis = ConnectionPool.new(size: CONFIG[:redis_pool], timeout: CONFIG[:redis_timeout]) do
+  Redis.new(:db => 0, :host => CONFIG[:redis_host], :port => CONFIG[:redis_port])
+end
+
+$redis.with do |redis|
+  redis.get("my.key")
+end
+          </code>
+        </pre>
+      </section>
+      <!-- /Optimizations -->
+
+      <!-- Server scaling -->
+      <section>
+        <section>
+          <h1>Scaling servers or databases</h1>
+        </section>
+
+        <section>
+          <ul>
+            <li>Increase postgres max_connections (default 100)</li>
+            <li class="fragment">Increase postgres shared_buffers and effective_cache_size</li>
+            <li class="fragment">Increase redis maxclients (default 128)</li>
+            <li class="fragment">Use pg_bouncer to reuse postgres connections</li>
+            <li class="fragment">Use cassandra for data that can grow exponentially</li>
+            <li class="fragment">Use elasticsearch for indexing cassandra</li>
+            <li class="fragment">Don't run sidekiq on the same servers as application</li>
+            <li class="fragment">Cache semi-static content in nginx and use proxy_cache_bypass to invalidate it</li>
+            <li class="fragment">Add swap, you don't want to run out of memory ever</li>
+          </ul>
+        </section>
+      </section>
+      <!-- Server scaling -->
+
+      <!-- Monitoring -->
+      <section>
+        <section>
+          <h1>Measure everything</h1>
+        </section>
+
+        <section>
+          <h3>New Relic</h3>
+          <img src="http://doers.statuspage.io/img/public-metrics/new-relic/new-relic-1.png"/>
+        </section>
+
+        <section>
+          <h3>Sidekiq</h3>
+          <img src="http://i.imgur.com/Tjbf7SZ.png"/>
+        </section>
+
+        <section>
+          <h3>Uptime</h3>
+          <img src="http://i.imgur.com/5N2lbjB.png"/>
+        </section>
+
+        <section>
+          <h3>Opbeat</h3>
+          <img src="http://i.imgur.com/XNGLLrc.png"/>
+        </section>
+
+        <section>
+          <h3>Custom metrics - Grafana+Statsd+Influxdb</h3>
+          <img src="http://i.imgur.com/Tm7763A.png"/>
+        </section>
+        <section>
+          <h3>Custom metrics - Grafana+Statsd+Influxdb</h3>
+          <img src="http://i.imgur.com/CvanaIU.png"/>
+        </section>
+      </section>
+      <!-- /Monitoring -->
+
+      <!-- Scaling team -->
+
+      <section>
+        <section>
+          <h1>Scaling team productivity</h1>
+        </section>
+
+        <section>
+          <ul>
+            <li>Use microservices</li>
+            <li class="fragment">Split frontend / backend repositories</li>
+            <li class="fragment">Deploy using just git push</li>
+            <li class="fragment">Use continous integration</li>
+            <li class="fragment">Setup local docker/azk workflow</li>
+          </ul>
+        </section>
+      </section>
+      <!-- / Scaling team -->
+
+      <!-- Useful links -->
+      <section>
+        <section>
+          <h1>Useful links</h1>
+        </section>
+
+        <section>
+          <ol>
+            <li><a href="https://github.com/willnorris/imageproxy">ImageProxy</a></li>
+            <li><a href="http://grafana.org/">Grafana</a></li>
+            <li><a href="https://github.com/fzaninotto/uptime">Uptime</a></li>
+            <li><a href="https://github.com/progrium/gitreceive">Gitreceive</a></li>
+            <li><a href="https://github.com/flynn/flynn/tree/master/slugbuilder">Slugbuilder</a></li>
+            <li><a href="https://github.com/flynn/flynn/tree/master/slugrunner">Slugrunner</a></li>
+            <li><a href="https://opbeat.com">Opbeat</a></li>
+          </ol>
+        </section>
+      </section>
+      <!-- /Useful links -->
+			</div>
+		</div>
+
+		<script src="lib/js/head.min.js"></script>
+		<script src="js/reveal.js"></script>
+
+		<script>
+
+			// Full list of configuration options available at:
+			// https://github.com/hakimel/reveal.js#configuration
+			Reveal.initialize({
+				controls: true,
+				progress: true,
+				history: true,
+				center: true,
+
+				transition: 'slide', // none/fade/slide/convex/concave/zoom
+
+				// Optional reveal.js plugins
+				dependencies: [
+					{ src: 'lib/js/classList.js', condition: function() { return !document.body.classList; } },
+					{ src: 'plugin/markdown/marked.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+					{ src: 'plugin/markdown/markdown.js', condition: function() { return !!document.querySelector( '[data-markdown]' ); } },
+					{ src: 'plugin/highlight/highlight.js', async: true, condition: function() { return !!document.querySelector( 'pre code' ); }, callback: function() { hljs.initHighlightingOnLoad(); } },
+					{ src: 'plugin/zoom-js/zoom.js', async: true },
+					{ src: 'plugin/notes/notes.js', async: true }
+				]
+			});
+
+		</script>
+
+	</body>
+</html>
